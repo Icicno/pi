@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+/#!/usr/bin/env bash
 set -e
 
 AUTH_FILE="$HOME/.pi/agent/auth.json"
