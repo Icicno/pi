@@ -13,6 +13,7 @@ import type { AssistantMessageEventStream } from "./utils/event-stream.ts";
 
 export type { AssistantMessageEventStream } from "./utils/event-stream.ts";
 
+// 协议实现格式
 export type KnownApi =
 	| "openai-completions"
 	| "mistral-conversations"
@@ -31,6 +32,7 @@ export type KnownImagesApi = "openrouter-images";
 
 export type ImagesApi = KnownImagesApi | (string & {});
 
+// 模型供应商，用于配置命名空间（auth等）
 export type KnownProvider =
 	| "amazon-bedrock"
 	| "ant-ling"
@@ -74,9 +76,11 @@ export type KnownImagesProvider = "openrouter";
 
 export type ImagesProviderId = KnownImagesProvider | string;
 
+// 思考等级，兼容最小、低、中等、高、极高、最高
 export type ThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type ModelThinkingLevel = "off" | ThinkingLevel;
 export type ThinkingLevelMap = Partial<Record<ModelThinkingLevel, string | null>>;
+// 是否开启思考模式
 export type ChatTemplateKwargValue =
 	| string
 	| number
@@ -88,6 +92,7 @@ export type ChatTemplateKwargValue =
 	  };
 
 /** Token budgets for each thinking level (token-based providers only) */
+// 不同思考等级对应的思考token预算（目前好像只有claude的anthropic-messages中使用）
 export interface ThinkingBudgets {
 	minimal?: number;
 	low?: number;
@@ -96,8 +101,10 @@ export interface ThinkingBudgets {
 }
 
 // Base options all providers share
+// 缓存有效期（用于统计token的消耗）
 export type CacheRetention = "none" | "short" | "long";
 
+// api通信方式：sse、websocket
 export type Transport = "sse" | "websocket" | "websocket-cached" | "auto";
 
 /** Provider-scoped environment overrides. Values take precedence over process.env. */
@@ -110,6 +117,7 @@ export interface ProviderResponse {
 	headers: Record<string, string>;
 }
 
+// 通用请求选项
 export interface StreamOptions {
 	temperature?: number;
 	maxTokens?: number;
@@ -194,6 +202,7 @@ export type ProviderStreamOptions = StreamOptions & Record<string, unknown>;
  * Maps known APIs to their full provider-specific stream option types.
  * Type-only imports from API implementation modules are erased at emit, so
  * this is tree-shake safe.
+ * 不同类别的api单独的映射，用于补充api独有的字段
  */
 export interface ApiOptionsMap {
 	"anthropic-messages": AnthropicOptions;
@@ -211,6 +220,7 @@ export interface ApiOptionsMap {
 /**
  * Full stream options for an API. Known APIs resolve to their concrete option
  * type; custom API strings fall back to the generic shape.
+ * api的完整流 形态
  */
 export type ApiStreamOptions<TApi extends Api> = TApi extends keyof ApiOptionsMap
 	? ApiOptionsMap[TApi]
@@ -292,6 +302,8 @@ export interface ImagesOptions {
 export type ProviderImagesOptions = ImagesOptions & Record<string, unknown>;
 
 // Unified options with reasoning passed to streamSimple() and completeSimple()
+// 在 StreamOptions 的基础上加 思考等级，提供给 agent 使用，agent 默认走 SimpleStreamOptions
+// 统一 thinking 语义
 export interface SimpleStreamOptions extends StreamOptions {
 	reasoning?: ThinkingLevel;
 	/** Custom token budgets for thinking levels (token-based providers only) */
@@ -299,13 +311,17 @@ export interface SimpleStreamOptions extends StreamOptions {
 }
 
 // Generic StreamFunction with typed options.
+// 通用规范
 //
 // Contract:
-// - Must return an AssistantMessageEventStream.
+// - Must return an AssistantMessageEventStream.  
+//   必须返回一个AssistantMessageEventStream类型的结果
 // - Once invoked, request/model/runtime failures should be encoded in the
-//   returned stream, not thrown.
+//   returned stream, not thrown.  
+//   在调用过程中，请求/运行时 失败应该在返回的流中编码错误信息，而不是直接抛出异常
 // - Error termination must produce an AssistantMessage with stopReason
-//   "error" or "aborted" and errorMessage, emitted via the stream protocol.
+//   "error" or "aborted" and errorMessage, emitted via the stream protocol.  
+//   异常时必须在流中返回带有 "error" or "aborted" and errorMessage 的 stopReason 信息的 AssistantMessage
 export type StreamFunction<TApi extends Api = Api, TOptions extends StreamOptions = StreamOptions> = (
 	model: Model<TApi>,
 	context: Context,
@@ -330,6 +346,7 @@ export interface TextContent {
 	textSignature?: string; // e.g., for OpenAI responses, message metadata (legacy id string or TextSignatureV1 JSON)
 }
 
+// 思考内容，可包含多轮
 export interface ThinkingContent {
 	type: "thinking";
 	thinking: string;
@@ -346,6 +363,7 @@ export interface ImageContent {
 	mimeType: string; // e.g., "image/jpeg", "image/png"
 }
 
+// 工具调用结构，包含工具id、name、arguments
 export interface ToolCall {
 	type: "toolCall";
 	id: string;
@@ -354,6 +372,7 @@ export interface ToolCall {
 	thoughtSignature?: string; // Google-specific: opaque signature for reusing thought context
 }
 
+// 统计用量
 export interface Usage {
 	input: number;
 	output: number;
@@ -377,14 +396,20 @@ export interface Usage {
 	};
 }
 
+// toolUse agent需要去执行工具，而非异常终止
+// error/aborted 失败/取消（仍装在AssistantMessage中，标记消息结束）
 export type StopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
 
+// 用户消息结构
 export interface UserMessage {
 	role: "user";
 	content: string | (TextContent | ImageContent)[];
 	timestamp: number; // Unix timestamp in milliseconds
 }
 
+// ai消息结构，content是块数组
+// 除了文本信息外、还包括模型的思考内容、工具调用信息等
+// responseModel 用于标记当前消息由上游什么模型响应
 export interface AssistantMessage {
 	role: "assistant";
 	content: (TextContent | ThinkingContent | ToolCall)[];
@@ -400,6 +425,7 @@ export interface AssistantMessage {
 	timestamp: number; // Unix timestamp in milliseconds
 }
 
+// 工具调用结果信息
 export interface ToolResultMessage<TDetails = any> {
 	role: "toolResult";
 	toolCallId: string;
@@ -410,6 +436,7 @@ export interface ToolResultMessage<TDetails = any> {
 	 * Names from `Context.tools` that became available after this result.
 	 * Providers with native deferred tool loading use this as the load point;
 	 * other providers ignore it and use `Context.tools` normally.
+	 * 延迟加载的tools信息
 	 */
 	addedToolNames?: string[];
 	isError: boolean;
@@ -441,12 +468,15 @@ export interface AssistantImages {
 
 import type { TSchema } from "typebox";
 
+// tool 定义
 export interface Tool<TParameters extends TSchema = TSchema> {
 	name: string;
 	description: string;
 	parameters: TParameters;
 }
 
+// 一次请求的输入包，包含系统提示词、各类历史消息、可用的tools
+// agent loop 将会话历史转换为 Context，然后再交给 stream
 export interface Context {
 	systemPrompt?: string;
 	messages: Message[];
@@ -455,6 +485,8 @@ export interface Context {
 
 /**
  * Event protocol for AssistantMessageEventStream.
+ * AssistantMessage的统一事件：先 start，中间 partial 更新，以 done 或 error 结束
+ * 上层的 agent loop 只需要知道这些事件，不需要了解更详细的原始协议
  *
  * Streams should emit `start` before partial updates, then terminate with either:
  * - `done` carrying the final successful AssistantMessage, or
@@ -478,6 +510,7 @@ export type AssistantMessageEvent =
 /**
  * Compatibility settings for OpenAI-compatible completions APIs.
  * Use this to override URL-based auto-detection for custom providers.
+ * chat-completions 协议兼容性处理
  */
 export interface OpenAICompletionsCompat {
 	/** Whether the provider supports the `store` field. Default: auto-detected from URL. */
@@ -531,6 +564,7 @@ export interface OpenAICompletionsCompat {
 }
 
 /** Compatibility settings for OpenAI Responses APIs. */
+// responses 协议兼容性处理
 export interface OpenAIResponsesCompat {
 	/** Whether the provider supports the `developer` role (vs `system`). Default: true. */
 	supportsDeveloperRole?: boolean;
@@ -543,6 +577,7 @@ export interface OpenAIResponsesCompat {
 }
 
 /** Compatibility settings for Anthropic Messages-compatible APIs. */
+// anthropic-messages 协议兼容性处理
 export interface AnthropicMessagesCompat {
 	/**
 	 * Whether the provider accepts per-tool `eager_input_streaming`.
@@ -701,6 +736,8 @@ export interface ModelCost extends ModelCostRates {
 }
 
 // Model interface for the unified model system
+// 模型元数据
+// compat 兼容各类/各家的api，它会修改 adapter 行为（如 role字段、thinking格式、tool search等），以便适配
 export interface Model<TApi extends Api> {
 	id: string;
 	name: string;

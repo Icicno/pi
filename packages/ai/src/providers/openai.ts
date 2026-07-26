@@ -8,8 +8,8 @@ export function openaiProvider(): Provider<"openai-responses"> {
 		id: "openai",
 		name: "OpenAI",
 		baseUrl: "https://api.openai.com/v1",
-		auth: { apiKey: envApiKeyAuth("OpenAI API key", ["OPENAI_API_KEY"]) },
-		models: Object.values(OPENAI_MODELS),
-		api: openAIResponsesApi(),
+		auth: { apiKey: envApiKeyAuth("OpenAI API key", ["OPENAI_API_KEY"]) },  // 解析key
+		models: Object.values(OPENAI_MODELS),  // 静态模型数据加载
+		api: openAIResponsesApi(),  // 真实的 stream 实现
 	});
 }

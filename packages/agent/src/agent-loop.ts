@@ -106,6 +106,7 @@ export async function runAgentLoop(
 		messages: [...context.messages, ...prompts],
 	};
 
+	// stream.push(event) 后 添加 start 标记
 	await emit({ type: "agent_start" });
 	await emit({ type: "turn_start" });
 	for (const prompt of prompts) {
@@ -167,10 +168,12 @@ async function runLoop(
 	let pendingMessages: AgentMessage[] = (await config.getSteeringMessages?.()) || [];
 
 	// Outer loop: continues when queued follow-up messages arrive after agent would stop
+	// 外循环，排队的后续消息在 pi-agent 停止时继续 
 	while (true) {
 		let hasMoreToolCalls = true;
 
 		// Inner loop: process tool calls and steering messages
+		// 处理 工具调用 或 阻塞的、待处理的消息
 		while (hasMoreToolCalls || pendingMessages.length > 0) {
 			if (!firstTurn) {
 				await emit({ type: "turn_start" });
@@ -179,10 +182,13 @@ async function runLoop(
 			}
 
 			// Process pending messages (inject before next assistant response)
+			// 处理挂起的消息
 			if (pendingMessages.length > 0) {
 				for (const message of pendingMessages) {
+					// 为每一条待处理的消息增加开始和结束标识
 					await emit({ type: "message_start", message });
 					await emit({ type: "message_end", message });
+					// 将新消息加入到上下文中
 					currentContext.messages.push(message);
 					newMessages.push(message);
 				}
@@ -190,9 +196,12 @@ async function runLoop(
 			}
 
 			// Stream assistant response
+			// 流式响应
 			const message = await streamAssistantResponse(currentContext, config, signal, emit, streamFn);
+			// 将消息处理结果响应信息加入到全局上下文中
 			newMessages.push(message);
 
+			// 判断消息处理响应内容，若 error | aborted 则 标识 消息结束，并直接返回（根据 emit 中的信息识别消息处理结果）
 			if (message.stopReason === "error" || message.stopReason === "aborted") {
 				await emit({ type: "turn_end", message, toolResults: [] });
 				await emit({ type: "agent_end", messages: newMessages });
@@ -200,35 +209,44 @@ async function runLoop(
 			}
 
 			// Check for tool calls
+			// 检查 消息处理结果的响应内容中是否有 toolCall
 			const toolCalls = message.content.filter((c) => c.type === "toolCall");
 
 			const toolResults: ToolResultMessage[] = [];
 			hasMoreToolCalls = false;
+			// 若 消息处理结果的响应内容中有 toolCall，则尝试进行 工具调用
 			if (toolCalls.length > 0) {
 				// A "length" stop means the output was cut off by the token limit, so
 				// every tool call in the message may carry truncated arguments. Fail
 				// them all instead of executing potentially borked calls.
+				// 'length' 表示 输出被token限制（上下文长度等）切断，此时响应中的每个工具调用都可能携带截断的参数，因此让它们全部失败，而不是执行可能发生故障的工具调用
 				const executedToolBatch =
 					message.stopReason === "length"
 						? await failToolCallsFromTruncatedMessage(toolCalls, emit)
-						: await executeToolCalls(currentContext, message, config, signal, emit);
+						: await executeToolCalls(currentContext, message, config, signal, emit);  // 正常执行工具调用
+				// 将工具调用结果放到 工具调用队列
 				toolResults.push(...executedToolBatch.messages);
+				// 标识执行失败的工具调用，在下一内循环中重新调用
 				hasMoreToolCalls = !executedToolBatch.terminate;
 
+				// 将工具调用结果放到全局上下文中
 				for (const result of toolResults) {
 					currentContext.messages.push(result);
 					newMessages.push(result);
 				}
 			}
 
+			// 标识当前 turn 结束
 			await emit({ type: "turn_end", message, toolResults });
 
+			// 整理下一 turn 的上下文内容
 			const nextTurnContext = {
 				message,
 				toolResults,
 				context: currentContext,
 				newMessages,
 			};
+			// 检查下一 turn 时是否存在 配置上的改动，如果有则替换
 			const nextTurnSnapshot = await config.prepareNextTurn?.(nextTurnContext);
 			if (nextTurnSnapshot) {
 				currentContext = nextTurnSnapshot.context ?? currentContext;
@@ -244,6 +262,7 @@ async function runLoop(
 				};
 			}
 
+			// 是否应该停止下一 turn 自动执行，例如在上下文太满的情况下，停顿；若不需要停顿，则继续内循环处理
 			if (
 				await config.shouldStopAfterTurn?.({
 					message,
@@ -260,6 +279,7 @@ async function runLoop(
 		}
 
 		// Agent would stop here. Check for follow-up messages.
+		// 检查是否存在后续的、未处理的消息
 		const followUpMessages = (await config.getFollowUpMessages?.()) || [];
 		if (followUpMessages.length > 0) {
 			// Set as pending so inner loop processes them
@@ -268,6 +288,7 @@ async function runLoop(
 		}
 
 		// No more messages, exit
+		// 处理完当前所有消息和工具调用
 		break;
 	}
 
@@ -277,6 +298,7 @@ async function runLoop(
 /**
  * Stream an assistant response from the LLM.
  * This is where AgentMessage[] gets transformed to Message[] for the LLM.
+ * agent messages 转换为 llm messages
  */
 async function streamAssistantResponse(
 	context: AgentContext,
@@ -287,14 +309,18 @@ async function streamAssistantResponse(
 ): Promise<AssistantMessage> {
 	// Apply context transform if configured (AgentMessage[] → AgentMessage[])
 	let messages = context.messages;
+	// 是否对上下文进行处理（例如压缩上下文、引入新的上下文内容等等）
 	if (config.transformContext) {
+		// 处理操作
 		messages = await config.transformContext(messages, signal);
 	}
 
 	// Convert to LLM-compatible messages (AgentMessage[] → Message[])
+	// 将 agentMessages 转换为 llm 可以理解的 userMessage、assistantMessage、toolResultMessage
 	const llmMessages = await config.convertToLlm(messages);
 
 	// Build LLM context
+	// 建立 llm 的上下文内容
 	const llmContext: Context = {
 		systemPrompt: context.systemPrompt,
 		messages: llmMessages,
@@ -304,9 +330,12 @@ async function streamAssistantResponse(
 	const streamFunction = streamFn || streamSimple;
 
 	// Resolve API key (important for expiring tokens)
+	// 动态解析当前 llm 调用的 api-key，检查 api-key 的有效性
 	const resolvedApiKey =
 		(config.getApiKey ? await config.getApiKey(config.model.provider) : undefined) || config.apiKey;
 
+	// 向 provider 发起 llm 请求（默认走 streamSimple 途径）
+	// streamSimple(model, context, options)
 	const response = await streamFunction(config.model, llmContext, {
 		...config,
 		apiKey: resolvedApiKey,
@@ -316,6 +345,7 @@ async function streamAssistantResponse(
 	let partialMessage: AssistantMessage | null = null;
 	let addedPartial = false;
 
+	// 待 llm 返回响应后，依次处理响应中的 event
 	for await (const event of response) {
 		switch (event.type) {
 			case "start":
@@ -362,6 +392,7 @@ async function streamAssistantResponse(
 		}
 	}
 
+	// 标识消息末尾
 	const finalMessage = await response.result();
 	if (addedPartial) {
 		context.messages[context.messages.length - 1] = finalMessage;
@@ -421,6 +452,7 @@ async function executeToolCalls(
 	const hasSequentialToolCall = toolCalls.some(
 		(tc) => currentContext.tools?.find((t) => t.name === tc.name)?.executionMode === "sequential",
 	);
+	// 顺序执行/并发执行 工具调用
 	if (config.toolExecution === "sequential" || hasSequentialToolCall) {
 		return executeToolCallsSequential(currentContext, assistantMessage, toolCalls, config, signal, emit);
 	}

@@ -371,6 +371,7 @@ export const clearApiKeyCache = clearConfigValueCache;
 
 /**
  * Model registry - loads and manages models, resolves API keys via AuthStorage.
+ * 读 ~/.pi/agent/models.json，拼出 Model[]，解析 apiKey
  */
 export class ModelRegistry {
 	private models: Model<Api>[] = [];
@@ -388,6 +389,7 @@ export class ModelRegistry {
 		this.loadModels();
 	}
 
+	// 加载全局 models.json
 	static create(authStorage: AuthStorage, modelsJsonPath: string = join(getAgentDir(), "models.json")): ModelRegistry {
 		return new ModelRegistry(authStorage, modelsJsonPath);
 	}
@@ -422,6 +424,17 @@ export class ModelRegistry {
 		return this.loadError;
 	}
 
+	/**
+	 *    loadCustomModels(models.json)
+	 *		├─ JSON.parse + schema 校验
+	 *		├─ 对每个 provider:
+	 *		│    · baseUrl/compat → overrides（给内置用）
+	 *		│    · storeProviderRequestConfig(apiKey/headers)  ← key 存在这里，不在 Model 上
+	 *		│    · parseModels() → 拼出 Model 对象数组
+	 *		├─ loadBuiltInModels() + 应用 overrides
+	 *		├─ mergeCustomModels()  // provider+id 冲突时 custom 赢
+	 *		└─ this.models = combined
+	 */
 	private loadModels(): void {
 		// Load custom models and overrides from models.json
 		const {
@@ -437,12 +450,14 @@ export class ModelRegistry {
 			// Keep built-in models even if custom models failed to load
 		}
 
+		// 合并内置模型，以 custom 为主
 		const builtInModels = this.loadBuiltInModels(overrides, modelOverrides);
 		let combined = this.mergeCustomModels(builtInModels, customModels);
 
 		// Let OAuth providers modify their models (e.g., update baseUrl)
 		for (const oauthProvider of this.authStorage.getOAuthProviders()) {
 			const cred = this.authStorage.get(oauthProvider.id);
+			// 通过 oauth 登录的则修改模型
 			if (cred?.type === "oauth" && oauthProvider.modifyModels) {
 				combined = oauthProvider.modifyModels(combined, cred);
 			}
@@ -547,6 +562,7 @@ export class ModelRegistry {
 					registerCustomRadiusOAuthProvider(providerName, providerConfig.name, providerConfig.baseUrl!);
 				}
 
+				// 保存 apiKey，需要时通过 getApiKeyAndHeaders(model) 取出
 				this.storeProviderRequestConfig(providerName, providerConfig);
 
 				if (providerConfig.modelOverrides) {
@@ -741,6 +757,10 @@ export class ModelRegistry {
 
 	/**
 	 * Get API key and request headers for a model.
+	 * 1. authStorage（auth.json / OAuth / env fallback）— includeFallback: false 时先只看存储
+	 * 2. 否则 models.json 的 provider.apiKey（支持明文、env 引用、command）
+	 * 3. headers = model.headers + provider.headers + model.headers（配置）
+	 * 4. 可选 authHeader: true → 手动加 Authorization Bearer
 	 */
 	async getApiKeyAndHeaders(model: Model<Api>): Promise<ResolvedRequestAuth> {
 		try {

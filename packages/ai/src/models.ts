@@ -24,6 +24,7 @@ export { type AuthModel, ModelsError, type ModelsErrorCode } from "./auth/resolv
 /**
  * A provider is the concrete runtime unit. It owns id/name/base metadata,
  * auth methods, model listing, and stream behavior.
+ * 一个可 stream 的运行时单元
  *
  * `TApi` lets concrete provider factories declare which APIs their models
  * use (e.g. `openaiProvider(): Provider<"openai-responses" | "openai-completions">`),
@@ -43,6 +44,7 @@ export interface Provider<TApi extends Api = Api> {
 	 * profiles, ADC files) and keyless local servers provide `apiKey` auth
 	 * whose `resolve()` reports whether the provider is configured.
 	 * `Models.getAuth()` returns undefined when the provider is unconfigured.
+	 * 定义 如何解析key
 	 */
 	readonly auth: ProviderAuth;
 
@@ -51,6 +53,7 @@ export interface Provider<TApi extends Api = Api> {
 	 * dynamic providers return the list as of the last `refreshModels()`
 	 * (empty before the first). Must not throw; `Models` treats a throwing
 	 * implementation as having no models.
+	 * 获取已知的模型，静态供应商（内置）返回
 	 */
 	getModels(): readonly Model<TApi>[];
 
@@ -60,15 +63,18 @@ export interface Provider<TApi extends Api = Api> {
 	 * belongs in app commands. Concurrent calls share one in-flight fetch.
 	 * May reject (network); on rejection the model list stays at its last-known
 	 * state and a later call retries.
+	 * 仅限动态提供商，获取和更新模型列表
 	 */
 	refreshModels?(): Promise<void>;
 
+	// 返回事件流
 	stream<T extends TApi>(
 		model: Model<T>,
 		context: Context,
 		options?: ApiStreamOptions<T>,
 	): AssistantMessageEventStream;
 
+	// 返回简化事件流（SimpleStreamOptions模式，更加常用）
 	streamSimple(model: Model<TApi>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream;
 }
 
@@ -76,6 +82,8 @@ export interface Provider<TApi extends Api = Api> {
  * Runtime collection of providers plus auth application and stream
  * convenience. Providers own stream behavior; `Models` resolves auth and
  * delegates each request to the provider that owns the model.
+ * 
+ * 多个 Providers 的集合 + auth + 分发
  */
 export interface Models {
 	getProviders(): readonly Provider[];
@@ -84,6 +92,7 @@ export interface Models {
 	/**
 	 * Sync read of last-known models from one provider or all providers.
 	 * Best-effort: a provider whose `getModels()` throws yields no models.
+	 * 同步从一个或多个 providers 读取到的已知模型
 	 */
 	getModels(provider?: string): readonly Model<Api>[];
 
@@ -98,6 +107,7 @@ export interface Models {
 	 * rejects with `ModelsError` ("model_source") on that provider's fetch
 	 * failure; without one, refreshes all providers concurrently best-effort.
 	 * Static providers (no `refreshModels`) are no-ops.
+	 * 要求动态提供商 重新获取它们的模型列表
 	 */
 	refresh(provider?: string): Promise<void>;
 
@@ -109,6 +119,7 @@ export interface Models {
 	 * when api-key resolution or the credential store fails. Request paths
 	 * surface rejections as stream errors; status/availability UIs catch them
 	 * and render "needs re-login" instead of treating them as unconfigured.
+	 * 解析模型的请求授权
 	 */
 	getAuth(model: Model<Api>): Promise<AuthResult | undefined>;
 
@@ -128,6 +139,7 @@ export interface Models {
 	completeSimple(model: Model<Api>, context: Context, options?: SimpleStreamOptions): Promise<AssistantMessage>;
 }
 
+// 可变的models（可以设置、删除、清理 providers）
 export interface MutableModels extends Models {
 	/** Upsert/replace by provider.id. Provider ids are unique. */
 	setProvider(provider: Provider): void;
@@ -140,6 +152,7 @@ export interface CreateModelsOptions {
 	authContext?: AuthContext;
 }
 
+// models的完整定义
 class ModelsImpl implements MutableModels {
 	private providers = new Map<string, Provider>();
 	private credentials: CredentialStore;
@@ -196,6 +209,7 @@ class ModelsImpl implements MutableModels {
 		return this.getModels(provider).find((model) => model.id === id);
 	}
 
+	// 刷新models，实际为每个 providers 执行 refreshModels
 	async refresh(provider?: string): Promise<void> {
 		if (provider !== undefined) {
 			const entry = this.providers.get(provider);
@@ -228,6 +242,7 @@ class ModelsImpl implements MutableModels {
 		return provider;
 	}
 
+	// 解析 key headers
 	private async applyAuth<TOptions extends StreamOptions>(
 		model: Model<Api>,
 		options: TOptions | undefined,
@@ -256,6 +271,12 @@ class ModelsImpl implements MutableModels {
 		return { requestModel, requestOptions };
 	}
 
+	/**
+	 * 1.通过 model.provider（Model<Api>）找到 provider
+	 * 2.applyAuth 解析 key/header 等请求信息
+	 * 3.调用该 provider 的 stream / streamSimple
+	 * 4.lazyStream 同步返回外层流
+	 */
 	stream<TApi extends Api>(
 		model: Model<TApi>,
 		context: Context,
@@ -320,6 +341,7 @@ export interface CreateProviderOptions<TApi extends Api = Api> {
  * custom providers both go through this. A single `api` streams all models;
  * an `api` map dispatches on `model.api`, and a model whose api has no entry
  * produces a stream error.
+ * 内置的 Provider 工厂
  */
 export function createProvider<TApi extends Api = Api>(input: CreateProviderOptions<TApi>): Provider<TApi> {
 	let models = input.models;
@@ -331,6 +353,7 @@ export function createProvider<TApi extends Api = Api>(input: CreateProviderOpti
 
 	const apiFor = (model: Model<Api>): ProviderStreams | undefined => single ?? byApi?.[model.api];
 
+	// 分发，按照 model.api 分发到对应的 stream / streamSimple
 	const dispatch = (
 		model: Model<Api>,
 		run: (streams: ProviderStreams) => AssistantMessageEventStream,
@@ -350,8 +373,8 @@ export function createProvider<TApi extends Api = Api>(input: CreateProviderOpti
 		baseUrl: input.baseUrl,
 		headers: input.headers,
 		auth: input.auth,
-		getModels: () => models,
-		refreshModels: refreshModels
+		getModels: () => models,  // 初始模型列表
+		refreshModels: refreshModels  // 动态加载模型列表
 			? () => {
 					inflightRefresh ??= (async () => {
 						try {
