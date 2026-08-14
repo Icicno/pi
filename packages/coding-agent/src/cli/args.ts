@@ -42,6 +42,7 @@ export interface Args {
 	promptTemplates?: string[];
 	noPromptTemplates?: boolean;
 	themes?: string[];
+	useTheme?: string;
 	noThemes?: boolean;
 	noContextFiles?: boolean;
 	listModels?: string | true;
@@ -162,6 +163,14 @@ export function parseArgs(args: string[]): Args {
 		} else if (arg === "--theme" && i + 1 < args.length) {
 			result.themes = result.themes ?? [];
 			result.themes.push(args[++i]);
+		} else if (arg === "--use-theme") {
+			const themeName = args[i + 1];
+			if (themeName === undefined || themeName.startsWith("-")) {
+				result.diagnostics.push({ type: "error", message: "--use-theme requires a theme name" });
+			} else {
+				result.useTheme = themeName;
+				i++;
+			}
 		} else if (arg === "--no-skills" || arg === "-ns") {
 			result.noSkills = true;
 		} else if (arg === "--no-prompt-templates" || arg === "-np") {
@@ -248,7 +257,7 @@ ${chalk.bold("Commands:")}
   ${APP_NAME} update [source|self|pi]   Update pi, extensions, or model catalogs
   ${APP_NAME} list                      List installed extensions from settings
   ${APP_NAME} config [-l]               Open TUI to enable/disable package resources (Tab switches scope)
-  ${APP_NAME} auth <command>            Print credentials for external clients
+  ${APP_NAME} auth <command>            Print credentials or check provider readiness
   ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list/config/auth
 
 ${chalk.bold("Options:")}
@@ -283,6 +292,7 @@ ${chalk.bold("Options:")}
   --prompt-template <path>       Load a prompt template file or directory (can be used multiple times)
   --no-prompt-templates, -np     Disable prompt template discovery and loading
   --theme <path>                 Load a theme file or directory (can be used multiple times)
+  --use-theme <name[/name]>      Set the initial interactive theme for this run
   --no-themes                    Disable theme discovery and loading
   --no-context-files, -nc        Disable AGENTS.md and CLAUDE.md discovery and loading
   --export <file>                Export session file to HTML and exit
@@ -299,10 +309,10 @@ Extensions can register additional flags (e.g., --plan from plan-mode extension)
 
 ${chalk.bold("Examples:")}
   # Print a provider API key for an external client
-  ${APP_NAME} auth print-api-key --provider openai --model gpt-5.5
+  ${APP_NAME} auth print-api-key --provider openai
 
   # Print an OAuth bearer token for an external client (refreshes if expired)
-  ${APP_NAME} auth print-bearer-token --provider openai-codex --model gpt-5.5
+  ${APP_NAME} auth print-bearer-token --provider openai-codex
 
   # Interactive mode
   ${APP_NAME}
